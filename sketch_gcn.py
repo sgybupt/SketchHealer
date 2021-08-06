@@ -212,7 +212,7 @@ class Model:
 
         # encode:
         # z, self.mu, self.sigma = self.encoder(batch, hp.batch_size)  # in here, Z is sampled from N(mu, sigma)
-        z, self.mu, self.sigma = self.encoder(graphs, adjs)  # in here, Z is sampled from N(mu, sigma)
+        z, self.mu, self.sigma, _ = self.encoder(graphs, adjs)  # in here, Z is sampled from N(mu, sigma)
         # torch.Size([100, 128]) torch.Size([100, 128]) torch.Size([100, 128])
         # print(z.shape, self.mu.shape, self.sigma.shape)
 
@@ -294,9 +294,9 @@ class Model:
     def save(self, epoch):
         # sel = np.random.rand()
         torch.save(self.encoder.state_dict(), \
-                   f'./model_save/encoderRNN_epoch_{epoch}.pth')
+                   f'./{hp.model_save}/encoderRNN_epoch_{epoch}.pth')
         torch.save(self.decoder.state_dict(), \
-                   f'./model_save/decoderRNN_epoch_{epoch}.pth')
+                   f'./{hp.model_save}/decoderRNN_epoch_{epoch}.pth')
 
     def load(self, encoder_name, decoder_name):
         saved_encoder = torch.load(encoder_name)
@@ -310,7 +310,7 @@ class Model:
         self.encoder.train(False)
         self.decoder.train(False)
         # encode:
-        z, _, _ = self.encoder(graphs, adjs)
+        z, _, _, _ = self.encoder(graphs, adjs)
         if hp.use_cuda:
             sos = torch.Tensor([0, 0, 1, 0, 0]).view(1, 1, -1).cuda()
         else:
@@ -349,10 +349,10 @@ class Model:
         """
 
         def adjust_temp(pi_pdf):
-            pi_pdf = np.log(1e-3 + pi_pdf) / hp.temperature
-            pi_pdf -= pi_pdf.max()
+            pi_pdf = np.log(1e-3 + np.abs(pi_pdf)) / hp.temperature
+            # pi_pdf -= pi_pdf.max()
             pi_pdf = np.exp(pi_pdf)
-            pi_pdf /= pi_pdf.sum()
+            pi_pdf /= (pi_pdf.sum())
             return pi_pdf
 
         # get mixture indice:
@@ -380,18 +380,28 @@ class Model:
             return next_state.view(1, 1, -1), x, y, q_idx == 1, q_idx == 2
 
 
+def get_parameter_number(net):
+    total_num = sum(p.numel() for p in net.parameters())
+    trainable_num = sum(p.numel() for p in net.parameters() if p.requires_grad)
+    return {'Total': total_num, 'Trainable': trainable_num}
+
+
 if __name__ == "__main__":
     model = Model()
+    print(get_parameter_number(model.encoder))
+    print(get_parameter_number(model.decoder))
     epoch_load = 0
+                                   
+       
     for epoch in range(500001):
         if epoch <= epoch_load:
             continue
         if epoch_load:
-            model.load(f'./model_save/encoderRNN_epoch_{epoch_load}.pth',
-                       f'./model_save/decoderRNN_epoch_{epoch_load}.pth')
+            model.load(f'./{hp.model_save}/encoderRNN_epoch_{epoch_load}.pth',
+                       f'./{hp.model_save}/decoderRNN_epoch_{epoch_load}.pth')
         model.train(epoch)
 
     '''
-    model.load('encoder.pth','decoder.pth')
+                                           
     model.conditional_generation(0)
-    '''
+    #'''
