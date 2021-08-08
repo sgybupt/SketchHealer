@@ -9,7 +9,7 @@ from hyper_params import hp
 
 class FeatureExtractionBasic(nn.Module):
     def __init__(self):
-        super(FeatureExtractionBasic, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(1, 8, 2, 2, 0)  # 64
         self.conv2 = nn.Conv2d(8, 32, 2, 2, 0)  # 32
         self.conv3 = nn.Conv2d(32, 64, 2, 2, 0)  # 16
@@ -30,7 +30,6 @@ class FeatureExtractionBasic(nn.Module):
         x = x.view(-1, 512)
         return x
 
-
 class FeatureExtraction(nn.Module):
     def __init__(self, graph_num=0, graph_size=0, train=True):
         super().__init__()
@@ -47,7 +46,7 @@ class FeatureExtraction(nn.Module):
         :return:
         """
         if inputs.shape[0] != 1:
-            tmp_batch = 1
+            tmp_batch = 1  # 分割份数
             tmp_result = []
             inputs = inputs.view(tmp_batch, -1, 1, self.graph_size, self.graph_size)
             for i in range(tmp_batch):
@@ -58,6 +57,8 @@ class FeatureExtraction(nn.Module):
                                            ).view(-1, self.graph_num, 512)
         result = self.bn1(result.view(-1, 512)).view(-1, self.graph_num, 512)
         return result
+
+
 
 
 if __name__ == '__main__':
@@ -100,13 +101,13 @@ class GCNProcessor(nn.Module):
         for param in self.parameters():
             param.requires_grad = train
 
-    def forward(self, input_g_f, adj):
+    def forward(self, X, A):
         """
-        :param input_g_f: (batch, graph_num, in_feature_num)
-        :param adj: (batch, graph_num, graph_num)
+        :param X: (batch, graph_num, in_feature_num)
+        :param A: (batch, graph_num, graph_num)
         :return:
         """
-        x = torch.matmul(adj, input_g_f)
+        x = torch.matmul(A, X)
         if self.bias_bool:
             x = torch.matmul(x, self.weight) + self.bias
         else:
@@ -180,7 +181,7 @@ class EncoderGCN(nn.Module):
             n = torch.normal(torch.zeros(z_size), torch.ones(z_size))
         # sample z
         z = mu + sigma_e * n
-        return z, mu, sigma
+        return z, mu, sigma, final
 
 
 if __name__ == '__main__':

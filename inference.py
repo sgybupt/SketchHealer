@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 from hyper_params import hp
 import numpy as np
@@ -13,8 +13,8 @@ from torch import optim
 from encoder import EncoderGCN
 from decoder import DecoderRNN
 from utils.sketch_processing import make_graph, draw_three
-import time
-import cv2
+           
+          
 
 
 ################################# load and prepare data
@@ -38,7 +38,7 @@ class SketchesDataset:
         data_sketches = np.concatenate(tmp_sketches)
         print(f"length of train set: {len(data_sketches)}")
 
-        data_sketches = self.purify(data_sketches)  # data clean.  # remove toolong and too stort sketches.
+        data_sketches = self.purify(data_sketches)  # data clean.  # remove too long and too stort sketches.
         self.sketches = data_sketches.copy()
         self.sketches_normed = self.normalize(data_sketches)
         self.Nmax = self.max_size(data_sketches)  # max size of a sketch.
@@ -50,6 +50,9 @@ class SketchesDataset:
         return max(sizes)
 
     def purify(self, sketches):
+        """
+        移除太短或过长的stroke
+        移除单个stroke 太长的."""
         data = []
         for sketch in sketches:
             if hp.max_seq_length >= sketch.shape[0] > hp.min_seq_length:  # remove small and too long sketches.
@@ -61,6 +64,7 @@ class SketchesDataset:
 
     @staticmethod
     def calculate_normalizing_scale_factor(sketches):
+        """计算所有sketches中的标准差"""
         data = []
         for sketch in sketches:
             for stroke in sketch:
@@ -68,7 +72,8 @@ class SketchesDataset:
         return np.std(np.array(data))
 
     def normalize(self, sketches):
-        """Normalize entire dataset (delta_x, delta_y) by the scaling factor."""
+        """Normalize entire dataset (delta_x, delta_y) by the scaling factor.
+        将所有的sketches 标准化, 即除以标准差. 使得方差等于1"""
         data = []
         scale_factor = self.calculate_normalizing_scale_factor(sketches)
         for sketch in sketches:
@@ -79,19 +84,20 @@ class SketchesDataset:
     def get_sample(self, sketch_index: int):
         """
         :return:
+        返回 batch, lengths. batch为sketches的连接, lengths是每一个sketch的长度列表
         """
         batch_idx = [sketch_index]
-        batch_sketches = [self.sketches_normed[idx] for idx in batch_idx]
-        batch_sketches_graphs = [self.sketches[idx] for idx in batch_idx]
+        batch_sketches = [self.sketches_normed[idx] for idx in batch_idx]  # 从标准化后的抽取
+        batch_sketches_graphs = [self.sketches[idx] for idx in batch_idx]  # 图卷积使用, 图卷积不能使用归一化后的
         sketches = []
         lengths = []
         graphs = []  # (batch_size * graphs_num_constant, x, y) # 注意按照 graphs num 切分
         adjs = []
         index = 0
         for _sketch in batch_sketches:
-            len_seq = len(_sketch[:, 0])  # sketch
+            len_seq = len(_sketch[:, 0])  # sketch 笔画数量
             new_sketch = np.zeros((self.Nmax, 5))  # new a _sketch, all length of sketch in size is Nmax.
-            new_sketch[:len_seq, :2] = _sketch[:, :2]
+            new_sketch[:len_seq, :2] = _sketch[:, :2]  # 1. 将x y拷贝进新的sketch
 
             # set p into one-hot.
             new_sketch[:len_seq - 1, 2] = 1 - _sketch[:-1, 2]
@@ -106,7 +112,7 @@ class SketchesDataset:
 
         for _each_sketch in batch_sketches_graphs:
             _graph_tensor, _adj_matrix = make_graph(_each_sketch, graph_num=hp.graph_number,
-                                                    graph_picture_size=hp.graph_picture_size, mask_prob=0.0)
+                                                    graph_picture_size=hp.graph_picture_size, mask_prob=hp.mask_prob)
             graphs.append(_graph_tensor)
             adjs.append(_adj_matrix)
 
@@ -126,6 +132,11 @@ class SketchesDataset:
 def sample_bivariate_normal(mu_x: torch.Tensor, mu_y: torch.Tensor,
                             sigma_x: torch.Tensor, sigma_y: torch.Tensor,
                             rho_xy: torch.Tensor, greedy=False):
+    """
+    根据网络输出, 进行采样
+    1. 获取 x, y的均值及标准差
+    2. 计算相关系数
+    """
     mu_x = mu_x.item()
     mu_y = mu_y.item()
     sigma_x = sigma_x.item()
@@ -136,7 +147,7 @@ def sample_bivariate_normal(mu_x: torch.Tensor, mu_y: torch.Tensor,
         return mu_x, mu_y
     mean = [mu_x, mu_y]
 
-    sigma_x *= np.sqrt(hp.temperature)
+    sigma_x *= np.sqrt(hp.temperature)  # 乘以热度开根号
     sigma_y *= np.sqrt(hp.temperature)
 
     cov = [[sigma_x * sigma_x, rho_xy * sigma_x * sigma_y],
@@ -145,8 +156,9 @@ def sample_bivariate_normal(mu_x: torch.Tensor, mu_y: torch.Tensor,
     return x[0][0], x[0][1]
 
 
-def make_image(sequence, name='cat', sketch_index=-1, path="./visualize/"):
-    strokes = np.split(sequence, np.where(sequence[:, 2] > 0)[0] + 1)
+def make_image(sequence, sketch_index, name='_output_', path="./visualize/"):
+    """分离strokes, 并画图"""
+    strokes = np.split(sequence, np.where(sequence[:, 2] > 0)[0] + 1)  # 指出所有满足条件的坐标, +1 是因为split类似于[m:n]
     fig = plt.figure()
     ax1 = fig.add_subplot(111)
     for s in strokes:
@@ -156,7 +168,7 @@ def make_image(sequence, name='cat', sketch_index=-1, path="./visualize/"):
     pil_image = PIL.Image.frombytes('RGB', canvas.get_width_height(),
                                     canvas.tostring_rgb())
     os.makedirs(f"{path}/{name}", exist_ok=True)
-    name = f"{path}" + f"{name}/{sketch_index}.jpg"
+    name = f"{path}" + str(sketch_index) + name + '.jpg'
     pil_image.save(name, "JPEG")
     plt.close("all")
 
@@ -204,13 +216,16 @@ class Model:
         result_z_list = []
 
         for sketch_index, sketch in enumerate(sketch_dataset.sketches_normed):
+            print(sketch_index)
             batch, lengths, graphs, adjs = sketch_dataset.get_sample(sketch_index)
             # encode:
-            self.z, self.mu, self.sigma = self.encoder(graphs, adjs)
+            self.z, mu, sigma, hidden_vector = self.encoder(graphs, adjs)
+            # result_z_list.append(self.z.cpu().numpy())
+            result_z_list.append(mu.cpu().numpy())
 
-            result_z_list.append(self.mu.cpu().numpy())
+            count += 1
             if count == category_count:
-                print(f"{category_name} finished.")
+                os.makedirs(f"{save_middle_path}/npz", exist_ok=True)
                 np.savez(f"./{save_middle_path}/npz/{category_name}.npz", z=np.array(result_z_list))
                 result_z_list = []
                 category_flag += 1
@@ -218,8 +233,8 @@ class Model:
                 count = 0
                 category_count = sketch_dataset.sketches_categroy_count[category_flag]
                 print(f"{category_name} finished")
-            # if sketch_index % 100 != 0:
-            #     continue
+            if sketch_index % 100 != 0 or True:
+                continue
             print(f"drawing {category_name} {count}")
             if hp.use_cuda:
                 sos = torch.Tensor([0, 0, 1, 0, 0]).view(1, 1, -1).cuda()
@@ -231,12 +246,12 @@ class Model:
             seq_z = []
             hidden_cell = None
             for i in range(hp.Nmax):  # Nmax = 151
-                _input = torch.cat([s, self.mu.unsqueeze(0)], 2)  # start of stroke concatenate with z
+                _input = torch.cat([s, self.z.unsqueeze(0)], 2)  # start of stroke concatenate with z
                 # decode:
                 self.pi, \
                 self.mu_x, self.mu_y, \
                 self.sigma_x, self.sigma_y, \
-                self.rho_xy, self.q, hidden, cell = self.decoder(_input, self.mu, hidden_cell)
+                self.rho_xy, self.q, hidden, cell = self.decoder(_input, self.z, hidden_cell)
                 hidden_cell = (hidden, cell)
                 # sample from parameters:
                 s, dx, dy, pen_down, eos = self.sample_next_state()
@@ -252,18 +267,25 @@ class Model:
             # y_sample = np.cumsum(seq_y, 0)
             # z_sample = np.array(seq_z)
             # sequence = np.stack([x_sample, y_sample, z_sample]).T
+                                                       
+                                                                                         
+                                                                                    
+                                                                                            
+
+            # # visualize result:
             _sketch = np.stack([seq_x, seq_y, seq_z]).T
-            sketch_cv = draw_three(_sketch, random_color=False, show=False, img_size=512)
-            os.makedirs(f"{save_middle_path}/sketch/{category_name}", exist_ok=True)
-            cv2.imwrite(f"{save_middle_path}/sketch/{category_name}/{count}.jpg", sketch_cv)
+            try:
+                sketch_cv = draw_three(_sketch, img_size=256)
+            except Exception as e:
+                _sketch = np.zeros((256, 256, 1))
+            os.makedirs(f"./{save_middle_path}/sketch/{category_name}", exist_ok=True)
+            cv2.imwrite(f"./{save_middle_path}/sketch/{category_name}/{sketch_index}.jpg", _sketch)
 
-            # make_image(sequence, name=f"{category_name}", sketch_index=count - 1, path=f"./{save_middle_path}/sketch/")
+            # make_image(sequence, count - 1, name=f"_{category_name}", path=f"./{save_middle_path}/sketch/")
+                                                                      
+                      
 
-            if count % 100 == 0:
-                print(f"{category_name} has finished {count} images.")
-            count += 1
-
-    def conditional_generate_by_z(self, z, index):  #
+    def conditional_generate_by_z(self, z, index=-1, plt_show=False):  #
         self.encoder.eval()
         self.decoder.eval()
         with torch.no_grad():
@@ -276,7 +298,7 @@ class Model:
             seq_y = []
             seq_z = []
             hidden_cell = None
-            for i in range(177):  # Nmax = 177
+            for i in range(151):  # Nmax = 151
                 _input = torch.cat([s, z.unsqueeze(0)], 2)  # start of stroke concatenate with z
                 # decode:
                 self.pi, \
@@ -291,22 +313,27 @@ class Model:
                 seq_y.append(dy)
                 seq_z.append(pen_down)
                 if eos:
-                    # print(i)
+                    seq_x.append(0)
+                    seq_y.append(0)
+                    seq_z.append(True)
                     break
             # visualize result:
-            x_sample = np.cumsum(seq_x, 0)
+            x_sample = np.cumsum(seq_x, 0)  # 累加, 梯形求和
             y_sample = np.cumsum(seq_y, 0)
             z_sample = np.array(seq_z)
-            print(seq_x, seq_y, seq_z)
+                                      
             sequence = np.stack([x_sample, y_sample, z_sample]).T
-            make_image(sequence, name=f"_z_generated", sketch_index=index, path="./visualize/generate_z/")
+            if plt_show:
+                make_image(sequence, index, name=f"_z_generated", path="./visualize/generate_z/")
+            _sketch = np.stack([seq_x, seq_y, seq_z]).T
+            return _sketch
 
     def sample_next_state(self):
         def adjust_temp(pi_pdf):
             """
             SoftMax
             """
-            pi_pdf = np.log(1e-3 + pi_pdf) / hp.temperature
+            pi_pdf = np.log(pi_pdf) / hp.temperature
             pi_pdf -= pi_pdf.max()
             pi_pdf = np.exp(pi_pdf)
             pi_pdf /= pi_pdf.sum()
@@ -315,11 +342,11 @@ class Model:
         # get mixture indice:
         pi = self.pi.data[0, 0, :].cpu().numpy()
         pi = adjust_temp(pi)
-        pi_idx = np.random.choice(hp.M, p=pi)
+        pi_idx = np.random.choice(hp.M, p=pi)  # 抽一个数字
         # get pen state:
         q = self.q.data[0, 0, :].cpu().numpy()
         q = adjust_temp(q)
-        q_idx = np.random.choice(3, p=q)
+        q_idx = np.random.choice(3, p=q)  # 抽一个数字
         # get mixture params:
         mu_x = self.mu_x.data[0, 0, pi_idx]
         mu_y = self.mu_y.data[0, 0, pi_idx]
@@ -345,21 +372,47 @@ class Model:
 
 if __name__ == "__main__":
     import random
+    import glob
+    import cv2
 
-    epoch = 100000
-
+    hp.mask_prob = 0.0
     sketch_dataset = SketchesDataset(hp.data_location, hp.category, "test")
     hp.Nmax = sketch_dataset.Nmax
+    hp.Nmax = 177
+    hp.temperature = 0.01
+    # hp.Nmax = 151 for v2_1
+    # hp.Nmax = 177 for masked
     model = Model()
-    model.load(f'./model_save/encoderRNN_epoch_{epoch}.pth',
-               f'./model_save/decoderRNN_epoch_{epoch}.pth')
+    # model.encoder.cuda()
+    # model.decoder.cuda()
+    # model.load("./model_save_v2_1/encoderRNN_epoch_99000.pth",
+    #            "./model_save_v2_1/decoderRNN_epoch_99000.pth")
+    #model.load(f"./{hp.model_save}/encoderRNN_epoch_8000_sgy.pth",
+    #           f"./{hp.model_save}/decoderRNN_epoch_8000_sgy.pth")
+    model.load(f"./model_save/encoderRNN_epoch_146000.pth",
+               f"./model_save/decoderRNN_epoch_146000.pth")
 
     print(hp.mask_prob, hp.Nmax)
-    """you can specific your mask_prob and temperature"""
-    hp.mask_prob = 0.1
-    hp.temperature = 0.01
-    print(hp.mask_prob, hp.temperature)
-
-    """look at this function for more inference details."""
-    model.validate(sketch_dataset, save_middle_path="result/visualize")
+    model.validate(sketch_dataset, save_middle_path=f"result/visualize2/146000/{hp.mask_prob}")
     exit(0)
+                         
+                                       
+'''
+    # generate images by z or mu
+    root_path = f"result/visualize2/146000/{hp.mask_prob}"
+    for each_npz_path in glob.glob(f"./{root_path}/npz/*.npz"):
+        _npz = np.load(each_npz_path, allow_pickle=True, encoding="latin1")["z"]
+        npz_path = each_npz_path.split("/")[-1]
+        cate_name = npz_path.replace(".npz", "")
+        if os.path.exists(f"./{root_path}/images/{cate_name}"):
+            pass
+        else:
+            os.makedirs(f"./{root_path}/images/{cate_name}")
+        for index, each_vector in enumerate(_npz):
+            _sketch = model.conditional_generate_by_z(torch.Tensor(each_vector).cuda())
+            sketch_image_cv = draw_three(_sketch, show=False, img_size=256)
+            cv2.imwrite(f"./{root_path}/images/{cate_name}/{index}.jpg", sketch_image_cv)
+            print(f"{cate_name} {index} finished")
+        print(f"{cate_name} finished")
+    exit(0)
+'''
